@@ -491,7 +491,7 @@ class Dataset(dict):
                     # We revert to the old behavior which should then result in a
                     # Numpy error later on.
                     pass
-
+        #
         pixel_array = numpy.fromstring(pixel_bytearray, dtype=numpy_dtype)
 
         # Note the following reshape operations return a new *view* onto pixel_array, but don't copy the data
