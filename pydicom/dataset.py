@@ -413,6 +413,8 @@ class Dataset(dict):
         # There are two cases:
         # 1) uncompressed PixelData -> use numpy
         # 2) compressed PixelData, filename is available and GDCM is available -> use GDCM
+
+        is_single_bit = False
         if self._is_uncompressed_transfer_syntax():
             # Make NumPy format code, e.g. "uint16", "int32" etc
             # from two pieces of info:
@@ -420,6 +422,10 @@ class Dataset(dict):
             #    self.BitsAllocated -- 8, 16, or 32
             format_str = '%sint%d' % (('u', '')[self.PixelRepresentation],
                                       self.BitsAllocated)
+            # Handle SINGLEBIT case
+            if self.BitsAllocated == 1:
+                is_single_bit = True
+                format_str = "uint8"
             try:
                 numpy_dtype = numpy.dtype(format_str)
             except TypeError:
@@ -428,7 +434,7 @@ class Dataset(dict):
                 raise TypeError(msg % (format_str, self.PixelRepresentation,
                                 self.BitsAllocated))
 
-            if self.is_little_endian != sys_is_little_endian:
+            if (self.is_little_endian != sys_is_little_endian) and not is_single_bit:
                 numpy_dtype = numpy_dtype.newbyteorder('S')
 
             pixel_bytearray = self.PixelData
@@ -451,7 +457,9 @@ class Dataset(dict):
                 gdcm.PixelFormat.UINT32:   numpy.uint32,
                 gdcm.PixelFormat.INT32:    numpy.int32,
                 gdcm.PixelFormat.FLOAT32:  numpy.float32,
-                gdcm.PixelFormat.FLOAT64:  numpy.float64
+                gdcm.PixelFormat.FLOAT64:  numpy.float64,
+                # Use numpy uint8 for single bits
+                gdcm.PixelFormat.SINGLEBIT: numpy.uint8
             }
             gdcm_pixel_format = gdcm_image.GetPixelFormat().GetScalarType()
             if gdcm_pixel_format in gdcm_numpy_typemap:
@@ -479,20 +487,32 @@ class Dataset(dict):
             # buffer that is too large, so we need to make sure we only include
             # the first n_rows * n_columns * dtype_size bytes.
 
-            n_bytes = self.Rows * self.Columns * numpy.dtype(numpy_dtype).itemsize
+            # Only check padding in case other format than SingleBIT
+            if gdcm_pixel_format != gdcm.PixelFormat.SINGLEBIT:
 
-            if len(pixel_bytearray) > n_bytes:
+                n_bytes = self.Rows * self.Columns * numpy.dtype(numpy_dtype).itemsize
 
-                # We make sure that all the bytes after are in fact zeros
-                padding = pixel_bytearray[n_bytes:]
-                if numpy.any(numpy.fromstring(padding, numpy.byte)):
-                    pixel_bytearray = pixel_bytearray[:n_bytes]
-                else:
-                    # We revert to the old behavior which should then result in a
-                    # Numpy error later on.
-                    pass
+                if len(pixel_bytearray) > n_bytes:
+
+                    # We make sure that all the bytes after are in fact zeros
+                    padding = pixel_bytearray[n_bytes:]
+                    if numpy.any(numpy.fromstring(padding, numpy.byte)):
+                        pixel_bytearray = pixel_bytearray[:n_bytes]
+                    else:
+                        # We revert to the old behavior which should then result in a
+                        # Numpy error later on.
+                        pass
+            else:
+                is_single_bit = True
         #
-        pixel_array = numpy.fromstring(pixel_bytearray, dtype=numpy_dtype)
+        try:
+            pixel_array = numpy.fromstring(pixel_bytearray, dtype=numpy_dtype)
+        except TypeError:
+            pixel_array = numpy.frombuffer(pixel_bytearray, dtype=numpy_dtype)
+
+        # Handle SINGLEBIT encoding
+        if is_single_bit:
+            pixel_array = numpy.unpackbits(pixel_array[::-1])
 
         # Note the following reshape operations return a new *view* onto pixel_array, but don't copy the data
         if 'NumberOfFrames' in self and self.NumberOfFrames > 1:
